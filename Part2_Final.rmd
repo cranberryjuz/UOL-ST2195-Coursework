@@ -1,6 +1,6 @@
 ---
 title: "CA2 - Flight Data"
-author: "LeeLaven_240730653"
+author: "LeeLaven"
 date: "2026-01-05"
 output: html_document
 ---
