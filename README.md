@@ -28,7 +28,6 @@ year-by-year memory cleanup, and downsampling for the diversion model.
 |---|---|
 | `Part1_Final.ipynb` / `.rmd` | Metropolis-Hastings (Python / R) |
 | `Part2_Final.ipynb` / `.rmd` | Flight delay & diversion analysis (Python / R) |
-| `Part1_Report.pdf` / `Part2_Report.pdf` | Write-ups |
 
 ## Requirements
 - **R:** `data.table`, `ggplot2`, `patchwork`, `broom`
