@@ -1,0 +1,432 @@
+---
+title: "CA2 - Flight Data"
+author: "LeeLaven_240730653"
+date: "2026-01-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+a)  What are the best times and days of the week to minimise delays each year?
+b)  Evaluate whether older planes suffer more delays on a year-to-year basis.
+c)  For each year, fit a logistic regression model for the probability of diverted US flights using as many features as possible from attributes of the departure date, the scheduled departure and arrival times, the coordinates and distance between departure and planned arrival airports, and the carrier. Visualize the coefficients across years.
+
+Import Libraries and 2004-2008 dataset.
+
+```{r}
+library(DBI) #connect to database
+library(data.table)
+library(dplyr)
+library(dbplyr)
+library(ggplot2)
+
+
+cols_needed <- c("Year", "Month", "DayOfWeek", "DepTime", "ArrDelay", 
+                 "DepDelay", "Cancelled", "Diverted", "UniqueCarrier",
+                 "TailNum", "Origin", "Dest", "Distance", 
+                 "CRSDepTime", "CRSArrTime")
+
+
+
+```
+
+## Load combination of 5 years
+
+By defining the columns needed before reading the csv files, it shaves off excessive time needed to load.
+Loading 1 year at a time instead of in chunks allows me to confirm each one works.
+"fread" reads the file using multiple threads simultaneously. 
+"select" in fread physically skips reading the unwanted columns from disk entirely. 
+
+```{r}
+flights_2004 <- fread(file = file.path("2004.csv"), select = cols_needed, na.strings = c("NA", ""))
+cat("2004 done, rows:", nrow(flights_2004), "\n")
+```
+
+saved years file for easier running of file
+
+```{r}
+flights_2005 <- fread(file = file.path("2005.csv"), select = cols_needed, na.strings = c("NA", ""))
+cat("2005 done, rows:", nrow(flights_2005), "\n")
+```
+
+Combine data into 1 table
+
+```{r}
+flights_2006 <- fread(file = file.path("2006.csv"), select = cols_needed, na.strings = c("NA", ""))
+cat("2006 done, rows:", nrow(flights_2006), "\n")
+```
+
+```{r}
+flights_2007 <- fread(file = file.path("2007.csv"), select = cols_needed, na.strings = c("NA", ""))
+cat("2007 done, rows:", nrow(flights_2007), "\n")
+```
+
+```{r}
+flights_2008 <- fread(file = file.path("2008.csv"), select = cols_needed, na.strings = c("NA", ""))
+cat("2008 done, rows:", nrow(flights_2008), "\n")
+```
+
+## Run the combined chunk
+
+```{r}
+flights <- rbindlist(list(flights_2004, flights_2005, flights_2006, 
+                          flights_2007, flights_2008), fill = TRUE)
+cat("Total rows:", nrow(flights), "\n")
+```
+
+## Read supporting data
+
+```{r}
+airports <- read.csv(file.path("airports.csv"), header = TRUE)
+carriers <- read.csv(file.path("carriers.csv"), header = TRUE)
+planes <- read.csv(file.path("plane-data.csv"), header = TRUE)
+variables <- read.csv(file.path("variable-descriptions.csv"), header = TRUE)
+```
+
+## 2a)
+
+### Using 4hour time frames for faster processing
+
+```{r}
+
+#removing the cancelled flights and missing delays
+
+flights_clean <- flights %>%
+  filter(Cancelled == 0, !is.na(ArrDelay), !is.na(DepDelay)) %>%
+  mutate(
+    
+        TimeFrame = case_when(
+                    DepTime >= 0    & DepTime < 400  ~ "0000-0400",
+                    DepTime >= 400  & DepTime < 800  ~ "0400-0800",
+                    DepTime >= 800  & DepTime < 1200 ~ "0800-1200",
+                    DepTime >= 1200 & DepTime < 1600 ~ "1200-1600",
+                    DepTime >= 1600 & DepTime < 2000 ~ "1600-2000",
+                    DepTime >= 2000 & DepTime <= 2400 ~ "2000-2400",
+        TRUE ~ "Other"
+        ),
+
+#Map the individual days for easier plotting in later stage
+     Day = case_when(
+                        DayOfWeek == 1 ~ "Monday",
+                        DayOfWeek == 2 ~ "Tuesday",
+                        DayOfWeek == 3 ~ "Wednesday",
+                        DayOfWeek == 4 ~ "Thursday",
+                        DayOfWeek == 5 ~ "Friday",
+                        DayOfWeek == 6 ~ "Saturday",
+                        DayOfWeek == 7 ~ "Sunday"
+        ),
+    
+    TotalDelay = ArrDelay + DepDelay
+  )
+
+```
+
+### Best Time Frame per Year
+
+```{r}
+BestTime <- flights_clean %>%
+            group_by(Year,TimeFrame) %>%
+            summarise(AvgDelay = mean(TotalDelay), .groups = "drop")
+
+day_order <- c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+BestDay <- flights_clean %>%
+             group_by(Year, Day) %>%
+             summarise(AvgDelay = mean(TotalDelay), .groups = "drop")%>%
+             mutate(Day = factor(Day, levels = day_order)) %>%
+             arrange(Year, Day)
+BestTime
+BestDay
+```
+
+
+
+### Combined Results
+
+```{r}
+# Best time block per year
+best_time_conclusion <- BestTime %>%
+  group_by(Year) %>%
+  slice_min(AvgDelay, n = 1) %>%
+  rename(BestTimeBlock = TimeFrame)
+
+# Best day per year
+best_day_conclusion <- BestDay %>%
+  group_by(Year) %>%
+  slice_min(AvgDelay, n = 1) %>%
+  rename(BestDayType = Day)
+
+# Combine into one table
+combine_result <- left_join(best_time_conclusion, best_day_conclusion, by = "Year") %>%
+  select(Year, BestTimeBlock, BestDayType, AvgDelay.x, AvgDelay.y) %>%
+  rename(AvgDelayByTime = AvgDelay.x, AvgDelayByDay = AvgDelay.y)
+
+combine_result
+
+```
+
+```{r}
+#install.packages("patchwork")  to combine multiple ggplot graphs into one figure.
+library(patchwork)
+
+p1 <- BestTime %>%
+  filter(TimeFrame != "Other") %>%
+  ggplot(aes(x = Year, y = AvgDelay, color = TimeFrame, group = TimeFrame)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(title = "By Time of Day", x = "Year", 
+       y = "Avg Total Delay (mins)", color = "Time Frame")
+
+p2 <- BestDay %>%
+  ggplot(aes(x = Year, y = AvgDelay, color = Day, group = Day)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  theme_minimal() +
+  labs(title = "By Day", x = "Year", 
+       y = "Avg Total Delay (mins)", color = "Day")
+
+p1 + p2 + plot_annotation(title = "Best Times to Fly (2004-2008)")
+```
+
+### Conclusion for a)
+
+#### Best times and Days of the week in 2004 to 2008 to minimise delays are consistently 0400 - 0800 hours and Saturdays.Even with a fluctuation amongst the other days, Saturdays remained the best day with the lowest average total delays.
+
+## 2b)
+
+### Remove flight duplicates to clean memory
+
+```{r}
+rm(flights_2004, flights_2005, flights_2006, flights_2007, flights_2008)
+gc()
+```
+
+### Clean plane data to keep only tailnum and manufactured year and join with cleaned flights data
+
+```{r}
+planes_clean <- planes %>%
+             select(tailnum, year) %>%
+             rename(TailNum = tailnum, ManufactureYear = year) %>%
+             mutate(ManufactureYear = as.integer(ManufactureYear)) %>%
+             filter(!is.na(ManufactureYear), ManufactureYear > 1900)
+
+flights_age <- flights_clean %>%
+            inner_join(planes_clean, by = "TailNum") %>%
+            mutate(
+                  Year = as.integer(Year),
+                  PlaneAge = Year - ManufactureYear
+                  ) %>%
+            filter(PlaneAge >= 0, PlaneAge <= 50) %>%  # remove unrealistic ages
+            mutate(
+    # Group into age brackets 
+            AgeBracket = case_when(
+            PlaneAge <= 5  ~ "0-5 years",
+            PlaneAge <= 10 ~ "6-10 years",
+            PlaneAge <= 20 ~ "11-20 years",
+            PlaneAge <= 30 ~ "21-30 years",
+            TRUE           ~ "30+ years"
+            ))
+          
+
+## Average delay per age bracket per year
+age_delay <- flights_age %>%
+  group_by(Year, AgeBracket) %>%
+  summarise(AvgDelay = mean(TotalDelay, na.rm = TRUE), .groups = "drop")
+
+age_delay <- age_delay %>%
+  mutate(AgeBracket = factor(AgeBracket, 
+                             levels = c("0-5 years", "6-10 years", 
+                                        "11-20 years", "21-30 years", 
+                                        "30+ years")))
+
+```
+
+### PLOT
+
+```{r}
+age_delay %>%
+  ggplot(aes(x = Year, y = AgeBracket, fill = AvgDelay)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low ="lightyellow", high = "red3") +
+  theme_minimal() +
+  labs(title = "Average Delay by Plane Age (2004-2008)",
+       x = "Year", y = "Plane Age",
+       fill = "Avg Delay (mins)")
+
+age_delay
+```
+
+### Conclusion for b)
+
+#### - In 2004, the 30+ years row is notably the lightest (lowest delays \~9 mins) - older planes really performed best.
+
+#### - By 2007-2008, the 30+ years row becomes the darkest – they declined the most relative to other age groups.
+
+#### - As a result, all age groups deteriorate over time (everyone gets darker from left to right), but those over 30 show the most degradation.
+
+## 2C)
+
+Before fitting the model:
+
+-   Clean airport data
+-   Check if coordinates/distance between airports affects diversion (EDA step)
+-   Fit 5 separate logistic regression models (one per year)
+-   Visualise coefficients across years
+
+```{r}
+#Check raw flight data
+table(flights$Diverted) #where 0= not diverted and 1=diverted
+
+### Define airports before the loop
+
+airports_clean <- airports %>%
+               select(iata, lat, long) %>%
+               rename(Origin = iata, OriginLat = lat, OriginLong = long)
+
+airports_dest <- airports %>%
+              select(iata, lat, long) %>%
+              rename(Dest = iata, DestLat = lat, DestLong = long)
+
+```
+
+### Check EDA and PLOT for distance vs flight diversion
+
+only using 2004 as a sample to gauge for the rest of the years.
+
+```{r}
+# Load 2 columns from 2004 only for EDA
+EDA_df <- fread(file.path("2004.csv"),
+                select = c("Distance", "Diverted"),
+                na.strings = c("NA", ""))
+
+# Summary table
+diversion_check <- EDA_df[, .(AvgDistance = mean(Distance, na.rm = TRUE),
+                               Count = .N), by = Diverted]
+diversion_check
+
+
+set.seed(123)
+flights_sample <- EDA_df[sample(nrow(EDA_df), 50000)]
+
+
+ggplot(flights_sample, aes(x = factor(Diverted), y = Distance, 
+                                              
+                           fill = factor(Diverted))) + geom_boxplot() +
+                                  theme_minimal() + labs(title = "Checking Distance vs Diversion (2004)",
+                                  x = "Diverted (0=No, 1=Yes)", 
+                                  y = "Distance (miles)") +
+                                  scale_fill_manual(values = c("steelblue", "tomato"),
+                                  labels = c("Not Diverted", "Diverted")) +
+                                  guides(fill = "none")
+
+rm(EDA_df, flights_sample)
+gc()
+```
+
+This EDA analysis was to check whether diverted flights tend to have longer/shorter distances? Eg. changing from JFK to Newark.
+
+The vast majority of diverted flights (red, right box) tend to have higher distances than non-diverted flights (blue, left box). The median distance for diverted flights is higher, indicating that longer flights are more likely to be diverted. But, non-diverted flights have way more outlier, hence distance is relevant to include in the logistic regression model.
+
+### Run the LRM
+
+#### Due to hitting a 16GB memory limit when running code, i processed the data year by year so it wipes each year's data before loading the next one.
+
+```{r}
+years <- c(2004, 2005, 2006, 2007, 2008)
+models <- list()
+
+for(yr in years) {
+  cat("Fitting model for", yr, "...\n")
+  
+  # Load one year at a time
+  df <- fread(file.path(paste0(yr, ".csv")),
+              select = c("Month", "DayOfWeek", "CRSDepTime",
+                         "CRSArrTime", "UniqueCarrier", "Origin",
+                         "Dest", "Distance", "Diverted"),
+              na.strings = c("NA", ""))
+  
+  # Join the coordinates of all attributes
+  df <- df %>%
+    left_join(airports_clean, by = "Origin") %>%
+    left_join(airports_dest, by = "Dest") %>%
+    filter(!is.na(OriginLat), !is.na(DestLat),
+           !is.na(Distance), !is.na(CRSDepTime),
+           !is.na(CRSArrTime)) %>%
+    mutate(Diverted = as.integer(Diverted),
+           UniqueCarrier = as.factor(UniqueCarrier),
+           CRSDepTime = scale(CRSDepTime),
+           CRSArrTime = scale(CRSArrTime),
+           Distance = scale(Distance),
+           OriginLat = scale(OriginLat),
+           OriginLong = scale(OriginLong),
+           DestLat = scale(DestLat),
+           DestLong = scale(DestLong)) %>%
+  
+   
+    group_by(Diverted) %>%
+    sample_n(5000) %>% #to ensure the same fixed size every year
+    ungroup()
+  
+   # Fit logistic regression
+  models[[as.character(yr)]] <- glm(
+  Diverted ~ Month + DayOfWeek + CRSDepTime + CRSArrTime +
+             OriginLat + OriginLong + DestLat + DestLong +
+             Distance + UniqueCarrier,
+             data = df,
+             family = binomial)
+  
+  
+  rm(df)
+  gc()
+  cat("Done:", yr, "\n")
+}
+
+names(models) <- as.character(2004:2008)
+cat("All models fitted!\n")
+```
+
+### Extract coefficients from models
+
+```{r}
+#install.packages("broom")
+ library(broom)
+
+
+coef_df <- bind_rows(lapply(2004:2008, function(yr) {
+        tidy(models[[as.character(yr)]]) %>%
+        mutate(Year = yr)
+}))
+coef_df
+```
+
+### PLOT Logistic Regression Coefficients with relevant attributes
+
+uniquecarrier is filtered out for visualisation to allow cleaner analysis 
+```{r}
+coef_df %>%
+  filter(!grepl("UniqueCarrier|Intercept", term)) %>%
+  ggplot(aes(x = factor(Year), y = estimate,
+            colour = term, group = term)) +
+            geom_line() + geom_point() +
+            geom_hline(yintercept = 0, linetype = "dotted") +
+            theme_minimal() +
+            labs(title = "Logistic Regression Coefficients Across Years (2004-2008)",
+            x = "Year", y = "Coefficient Estimate", colour = "Feature")
+
+```
+
+### Conclusion for c)
+
+Distance is found to be consistently the strongest positive predictor, meaning that longer flights have higher diversion probability.
+
+CRS Departure Time shows a decreasing effect over time meaning scheduled departure has lower diversion probability.
+
+CRS Arrival Time has a consistent positive with a peak in 2007 which indicates that scheduling arrival time have higher diversion probability.
+
+Month representts seasonal effects, as it slowly depletes overtime, it can be interpreted as airlines having better weather contingency plannings.
+
+The Destination Latitude and Longitude makes perfect sense too as flights in the north or south tend to face more weather disruptions and flights heading further west may have higher diversion due to rocky and mountainous terrain.
+
+
